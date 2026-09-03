@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+    <title>NovaLLM</title>
+    <link rel="stylesheet" href="/ui/style.css">
+</head>
+
+<body>
+
+<div class="app">
+
+    <header class="header">
+        <div class="brand">
+            <div class="logo">N</div>
+            <div>
+                <div class="title">NovaLLM</div>
+                <div class="status">
+                    <span class="dot"></span>
+                    AI Online
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main id="chat" class="chat">
+
+        <div class="message assistant">
+            <div class="avatar">N</div>
+            <div class="bubble">
+                こんにちは。NovaLLMです。
+            </div>
+        </div>
+
+    </main>
+
+    <footer class="composer">
+
+        <div class="input-wrap">
+
+            <textarea
+                id="input"
+                rows="1"
+                placeholder="NovaLLMにメッセージを入力..."
+            ></textarea>
+
+            <button id="send">
+                送信
+            </button>
+
+        </div>
+
+    </footer>
+
+</div>
+
+<script src="/ui/app.js"></script>
+
+</body>
+</html>
