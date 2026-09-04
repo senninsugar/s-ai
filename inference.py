@@ -11,72 +11,80 @@ from tokenizer import ByteTokenizer
 
 
 class NovaInference:
-
     def __init__(
         self,
         checkpoint: str,
         device: str | None = None,
     ):
-
         self.device = (
             device
             or RUNTIME.device
         )
 
-        self.tokenizer = (
-            ByteTokenizer()
-        )
+        self.tokenizer = ByteTokenizer()
 
         MODEL.vocab_size = (
             self.tokenizer.vocab_size
         )
 
-        self.model = NovaLM(
-            MODEL
-        )
+        self.model = NovaLM(MODEL)
+
+        checkpoint_path = Path(checkpoint)
+
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(
+                f"Checkpoint not found: {checkpoint_path}"
+            )
 
         checkpoint_data = torch.load(
-            checkpoint,
+            checkpoint_path,
             map_location=self.device,
             weights_only=False,
         )
 
-        state = checkpoint_data.get(
-            "model",
+        if isinstance(
             checkpoint_data,
-        )
+            dict,
+        ):
+            state = checkpoint_data.get(
+                "model",
+                checkpoint_data,
+            )
+        else:
+            state = checkpoint_data
 
         self.model.load_state_dict(
             state,
             strict=True,
         )
 
-        self.model.to(
-            self.device
-        )
-
+        self.model.to(self.device)
         self.model.eval()
 
         print(
-            f"[MODEL] Loaded: {checkpoint}"
+            f"[MODEL] Loaded: {checkpoint_path}"
         )
 
     def build_prompt(
         self,
         messages,
     ):
-
         parts = []
 
         for message in messages:
+            role = str(
+                message.get(
+                    "role",
+                    "user",
+                )
+            )
 
-            role = message[
-                "role"
-            ]
-
-            content = message[
-                "content"
-            ]
+            content = str(
+                message.get(
+                    "content",
+                    "",
+                )
+            )
 
             parts.append(
                 f"<|{role}|>\n"
@@ -88,9 +96,40 @@ class NovaInference:
             "<|assistant|>\n"
         )
 
-        return "\n".join(
-            parts
+        return "\n".join(parts)
+
+    def _clean_generated_text(
+        self,
+        text: str,
+    ):
+        if not text:
+            return ""
+
+        special_markers = [
+            "<|end|>",
+            "<|user|>",
+            "<|assistant|>",
+            "<|system|>",
+        ]
+
+        for marker in special_markers:
+            if marker in text:
+                text = text.split(
+                    marker,
+                    1,
+                )[0]
+
+        text = text.replace(
+            "\x00",
+            "",
         )
+
+        text = text.replace(
+            "\ufffd",
+            "",
+        )
+
+        return text.strip()
 
     @torch.no_grad()
     def generate(
@@ -101,7 +140,6 @@ class NovaInference:
         top_k=50,
         top_p=0.95,
     ):
-
         prompt = self.build_prompt(
             messages
         )
@@ -113,7 +151,6 @@ class NovaInference:
         )
 
         if len(tokens) >= MODEL.max_seq_len:
-
             tokens = tokens[
                 -MODEL.max_seq_len:
             ]
@@ -139,45 +176,28 @@ class NovaInference:
         ].tolist()
 
         text = self.tokenizer.decode(
-            generated
+            generated,
+            skip_special_tokens=True,
         )
 
-        if "<|end|>" in text:
-            text = text.split(
-                "<|end|>",
-                1
-            )[0]
-
-        return text.strip()
+        return self._clean_generated_text(
+            text
+        )
 
 
 def interactive(
     engine: NovaInference,
 ):
-
     messages = []
 
     print()
-    print(
-        "=" * 70
-    )
-
-    print(
-        "NovaLLM interactive mode"
-    )
-
-    print(
-        "終了: exit / quit"
-    )
-
-    print(
-        "=" * 70
-    )
+    print("=" * 70)
+    print("NovaLLM interactive mode")
+    print("終了: exit / quit")
+    print("=" * 70)
 
     while True:
-
         try:
-
             user = input(
                 "\nYou > "
             )
@@ -186,7 +206,6 @@ def interactive(
             EOFError,
             KeyboardInterrupt,
         ):
-
             print()
             break
 
@@ -206,9 +225,16 @@ def interactive(
             }
         )
 
-        answer = engine.generate(
-            messages
-        )
+        try:
+            answer = engine.generate(
+                messages
+            )
+        except Exception as e:
+            print(
+                f"\nNovaLLM error: {e}"
+            )
+            messages.pop()
+            continue
 
         print(
             f"\nNova > {answer}"
@@ -223,7 +249,6 @@ def interactive(
 
 
 def main():
-
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -250,7 +275,6 @@ def main():
     if not Path(
         args.checkpoint
     ).exists():
-
         raise FileNotFoundError(
             "Checkpoint not found: "
             + args.checkpoint
@@ -261,9 +285,7 @@ def main():
         device=args.device,
     )
 
-    interactive(
-        engine
-    )
+    interactive(engine)
 
 
 if __name__ == "__main__":
