@@ -10,7 +10,6 @@ from config import MODEL
 
 
 class RMSNorm(nn.Module):
-
     def __init__(
         self,
         dim: int,
@@ -25,7 +24,6 @@ class RMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x):
-
         variance = x.float().pow(2).mean(
             dim=-1,
             keepdim=True
@@ -41,7 +39,6 @@ class RMSNorm(nn.Module):
 
 
 def rotate_half(x):
-
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2:]
 
@@ -52,7 +49,6 @@ def rotate_half(x):
 
 
 class RotaryEmbedding(nn.Module):
-
     def __init__(
         self,
         dim: int,
@@ -78,16 +74,13 @@ class RotaryEmbedding(nn.Module):
             persistent=False
         )
 
-        self.max_seq_len = (
-            max_position_embeddings
-        )
+        self.max_seq_len = max_position_embeddings
 
         self._build_cache(
             max_position_embeddings
         )
 
-    def _build_cache(self, seq_len):
-
+    def _build_cache(self, seq_len: int):
         device = self.inv_freq.device
 
         positions = torch.arange(
@@ -124,32 +117,55 @@ class RotaryEmbedding(nn.Module):
         k,
         position_ids
     ):
+        if position_ids.numel() == 0:
+            return q, k
 
         max_position = (
             int(position_ids.max().item()) + 1
         )
 
         if max_position > self.max_seq_len:
-
             self._build_cache(
                 max_position
             )
 
             self.max_seq_len = max_position
 
-        cos = self.cos_cached[
-            :,
-            :,
-            position_ids,
-            :
-        ]
+        if position_ids.dim() == 1:
+            cos = self.cos_cached[
+                :,
+                :,
+                position_ids,
+                :
+            ]
 
-        sin = self.sin_cached[
-            :,
-            :,
-            position_ids,
-            :
-        ]
+            sin = self.sin_cached[
+                :,
+                :,
+                position_ids,
+                :
+            ]
+
+        elif position_ids.dim() == 2:
+            cos = self.cos_cached[
+                0,
+                0,
+                position_ids,
+                :
+            ].unsqueeze(1)
+
+            sin = self.sin_cached[
+                0,
+                0,
+                position_ids,
+                :
+            ].unsqueeze(1)
+
+        else:
+            raise ValueError(
+                "position_ids must have shape "
+                "[seq_len] or [batch, seq_len]"
+            )
 
         q = (
             q * cos
@@ -165,7 +181,6 @@ class RotaryEmbedding(nn.Module):
 
 
 class SwiGLU(nn.Module):
-
     def __init__(
         self,
         hidden_size: int,
@@ -192,7 +207,6 @@ class SwiGLU(nn.Module):
         )
 
     def forward(self, x):
-
         gate = self.gate_proj(x)
         up = self.up_proj(x)
 
@@ -202,31 +216,40 @@ class SwiGLU(nn.Module):
 
 
 class KVCache:
-
     def __init__(self):
         self.key = None
         self.value = None
+
+    @property
+    def seq_len(self):
+        if self.key is None:
+            return 0
+
+        return self.key.shape[-2]
 
     def update(
         self,
         key,
         value
     ):
-
         if self.key is None:
-
             self.key = key
             self.value = value
 
         else:
-
             self.key = torch.cat(
-                [self.key, key],
+                [
+                    self.key,
+                    key
+                ],
                 dim=-2
             )
 
             self.value = torch.cat(
-                [self.value, value],
+                [
+                    self.value,
+                    value
+                ],
                 dim=-2
             )
 
@@ -238,7 +261,6 @@ class KVCache:
 
 
 class CausalSelfAttention(nn.Module):
-
     def __init__(
         self,
         config
@@ -302,7 +324,6 @@ class CausalSelfAttention(nn.Module):
         self,
         x
     ):
-
         if self.num_kv_heads == self.num_heads:
             return x
 
@@ -323,7 +344,6 @@ class CausalSelfAttention(nn.Module):
         kv_cache=None,
         use_cache=False
     ):
-
         batch, seq_len, _ = x.shape
 
         q = self.q_proj(x)
@@ -355,13 +375,17 @@ class CausalSelfAttention(nn.Module):
 
             start = 0
 
-            if kv_cache is not None and kv_cache.key is not None:
+            if (
+                kv_cache is not None
+                and kv_cache.key is not None
+            ):
                 start = kv_cache.key.shape[-2]
 
             position_ids = torch.arange(
                 start,
                 start + seq_len,
-                device=x.device
+                device=x.device,
+                dtype=torch.long
             )
 
         q, k = self.rotary(
@@ -370,8 +394,12 @@ class CausalSelfAttention(nn.Module):
             position_ids
         )
 
-        if kv_cache is not None:
+        has_past_cache = (
+            kv_cache is not None
+            and kv_cache.key is not None
+        )
 
+        if kv_cache is not None:
             k, v = kv_cache.update(
                 k,
                 v
@@ -386,7 +414,7 @@ class CausalSelfAttention(nn.Module):
         ):
 
             is_causal = (
-                kv_cache is None
+                not has_past_cache
                 and seq_len > 1
             )
 
@@ -413,27 +441,26 @@ class CausalSelfAttention(nn.Module):
             q_len = q.shape[-2]
             k_len = k.shape[-2]
 
-            if (
-                kv_cache is None
-                and q_len == k_len
-            ):
+            if not has_past_cache:
 
-                mask = torch.triu(
-                    torch.ones(
-                        q_len,
-                        k_len,
-                        device=x.device,
-                        dtype=torch.bool
-                    ),
-                    diagonal=1
-                )
+                if q_len == k_len:
 
-                scores = scores.masked_fill(
-                    mask,
-                    torch.finfo(
-                        scores.dtype
-                    ).min
-                )
+                    mask = torch.triu(
+                        torch.ones(
+                            q_len,
+                            k_len,
+                            device=x.device,
+                            dtype=torch.bool
+                        ),
+                        diagonal=1
+                    )
+
+                    scores = scores.masked_fill(
+                        mask,
+                        torch.finfo(
+                            scores.dtype
+                        ).min
+                    )
 
             weights = F.softmax(
                 scores.float(),
@@ -456,13 +483,14 @@ class CausalSelfAttention(nn.Module):
             self.hidden_size
         )
 
-        output = self.o_proj(output)
+        output = self.o_proj(
+            output
+        )
 
         return output
 
 
 class TransformerBlock(nn.Module):
-
     def __init__(
         self,
         config
@@ -495,7 +523,6 @@ class TransformerBlock(nn.Module):
         kv_cache=None,
         use_cache=False
     ):
-
         x = x + self.attention(
             self.input_norm(x),
             position_ids=position_ids,
@@ -511,7 +538,6 @@ class TransformerBlock(nn.Module):
 
 
 class NovaLM(nn.Module):
-
     def __init__(
         self,
         config=None
@@ -545,7 +571,6 @@ class NovaLM(nn.Module):
         )
 
         if config.tie_embeddings:
-
             self.lm_head.weight = (
                 self.embedding.weight
             )
@@ -554,8 +579,10 @@ class NovaLM(nn.Module):
             self._init_weights
         )
 
-    def _init_weights(self, module):
-
+    def _init_weights(
+        self,
+        module
+    ):
         if isinstance(
             module,
             nn.Linear
@@ -590,13 +617,37 @@ class NovaLM(nn.Module):
         use_cache=False,
         caches=None
     ):
+        if input_ids.dim() != 2:
+            raise ValueError(
+                "input_ids must have shape "
+                "[batch, seq_len]"
+            )
 
         batch, seq_len = input_ids.shape
 
-        if seq_len > self.config.max_seq_len:
+        past_len = 0
+
+        if caches is not None:
+
+            for cache in caches:
+
+                if (
+                    cache is not None
+                    and cache.key is not None
+                ):
+                    past_len = cache.key.shape[-2]
+                    break
+
+        total_len = (
+            past_len
+            + seq_len
+        )
+
+        if total_len > self.config.max_seq_len:
+
             raise ValueError(
-                f"Sequence length {seq_len} "
-                f"exceeds "
+                f"Sequence length with cache "
+                f"{total_len} exceeds "
                 f"{self.config.max_seq_len}"
             )
 
@@ -605,8 +656,10 @@ class NovaLM(nn.Module):
         )
 
         position_ids = torch.arange(
-            seq_len,
-            device=input_ids.device
+            past_len,
+            past_len + seq_len,
+            device=input_ids.device,
+            dtype=torch.long
         )
 
         for i, layer in enumerate(
@@ -616,6 +669,13 @@ class NovaLM(nn.Module):
             cache = None
 
             if caches is not None:
+
+                if i >= len(caches):
+                    raise ValueError(
+                        "Number of KV caches must "
+                        "match number of model layers"
+                    )
+
                 cache = caches[i]
 
             x = layer(
@@ -625,13 +685,23 @@ class NovaLM(nn.Module):
                 use_cache=use_cache
             )
 
-        x = self.norm(x)
+        x = self.norm(
+            x
+        )
 
-        logits = self.lm_head(x)
+        logits = self.lm_head(
+            x
+        )
 
         loss = None
 
         if labels is not None:
+
+            if labels.shape != input_ids.shape:
+                raise ValueError(
+                    "labels must have the same shape "
+                    "as input_ids"
+                )
 
             shift_logits = (
                 logits[:, :-1, :]
@@ -657,6 +727,156 @@ class NovaLM(nn.Module):
             "loss": loss
         }
 
+    @staticmethod
+    def _top_k_filter(
+        logits,
+        top_k
+    ):
+        if top_k is None:
+            return logits
+
+        top_k = int(top_k)
+
+        if top_k <= 0:
+            return logits
+
+        top_k = min(
+            top_k,
+            logits.size(-1)
+        )
+
+        values, _ = torch.topk(
+            logits,
+            top_k,
+            dim=-1
+        )
+
+        threshold = (
+            values[:, -1]
+            .unsqueeze(-1)
+        )
+
+        return logits.masked_fill(
+            logits < threshold,
+            float("-inf")
+        )
+
+    @staticmethod
+    def _top_p_filter(
+        logits,
+        top_p
+    ):
+        if top_p is None:
+            return logits
+
+        top_p = float(top_p)
+
+        if top_p >= 1.0:
+            return logits
+
+        if top_p <= 0.0:
+            return logits
+
+        sorted_logits, sorted_indices = torch.sort(
+            logits,
+            descending=True,
+            dim=-1
+        )
+
+        probabilities = F.softmax(
+            sorted_logits,
+            dim=-1
+        )
+
+        cumulative_probs = probabilities.cumsum(
+            dim=-1
+        )
+
+        sorted_indices_to_remove = (
+            cumulative_probs > top_p
+        )
+
+        sorted_indices_to_remove[:, 1:] = (
+            sorted_indices_to_remove[:, :-1]
+            .clone()
+        )
+
+        sorted_indices_to_remove[:, 0] = False
+
+        sorted_logits = sorted_logits.masked_fill(
+            sorted_indices_to_remove,
+            float("-inf")
+        )
+
+        filtered_logits = torch.full_like(
+            logits,
+            float("-inf")
+        )
+
+        filtered_logits.scatter_(
+            -1,
+            sorted_indices,
+            sorted_logits
+        )
+
+        return filtered_logits
+
+    @staticmethod
+    def _sample_next_token(
+        logits,
+        temperature=0.8,
+        top_k=50,
+        top_p=0.95
+    ):
+        if temperature is None:
+            temperature = 1.0
+
+        temperature = float(
+            temperature
+        )
+
+        if temperature <= 0.0:
+
+            return torch.argmax(
+                logits,
+                dim=-1,
+                keepdim=True
+            )
+
+        logits = logits / temperature
+
+        logits = NovaLM._top_k_filter(
+            logits,
+            top_k
+        )
+
+        logits = NovaLM._top_p_filter(
+            logits,
+            top_p
+        )
+
+        probabilities = F.softmax(
+            logits,
+            dim=-1
+        )
+
+        if not torch.isfinite(
+            probabilities
+        ).all():
+
+            return torch.argmax(
+                logits,
+                dim=-1,
+                keepdim=True
+            )
+
+        next_token = torch.multinomial(
+            probabilities,
+            num_samples=1
+        )
+
+        return next_token
+
     @torch.no_grad()
     def generate(
         self,
@@ -667,8 +887,28 @@ class NovaLM(nn.Module):
         top_p=0.95,
         eos_token_id=2
     ):
-
         self.eval()
+
+        if input_ids.dim() != 2:
+            raise ValueError(
+                "input_ids must have shape "
+                "[batch, seq_len]"
+            )
+
+        if input_ids.shape[1] == 0:
+            raise ValueError(
+                "input_ids must contain at least one token"
+            )
+
+        if input_ids.shape[1] > self.config.max_seq_len:
+            raise ValueError(
+                f"Prompt length {input_ids.shape[1]} "
+                f"exceeds max_seq_len "
+                f"{self.config.max_seq_len}"
+            )
+
+        if max_new_tokens <= 0:
+            return input_ids
 
         generated = input_ids
 
@@ -677,102 +917,30 @@ class NovaLM(nn.Module):
             for _ in self.layers
         ]
 
-        for _ in range(max_new_tokens):
+        output = self(
+            input_ids,
+            use_cache=True,
+            caches=caches
+        )
 
-            if generated.shape[1] == 1:
-                current = generated
-            else:
-                current = generated[:, -1:]
+        logits = output["logits"][:, -1, :]
 
-            output = self(
-                current,
-                use_cache=True,
-                caches=caches
+        for _ in range(
+            max_new_tokens
+        ):
+
+            next_token = self._sample_next_token(
+                logits,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p
             )
 
-            logits = output["logits"][:, -1, :]
-
-            if temperature <= 0:
-                next_token = logits.argmax(
-                    dim=-1,
-                    keepdim=True
-                )
-
-            else:
-
-                logits = logits / temperature
-
-                if top_k > 0:
-
-                    values, _ = torch.topk(
-                        logits,
-                        min(
-                            top_k,
-                            logits.size(-1)
-                        )
-                    )
-
-                    threshold = values[:, -1].unsqueeze(
-                        -1
-                    )
-
-                    logits = logits.masked_fill(
-                        logits < threshold,
-                        float("-inf")
-                    )
-
-                if top_p < 1.0:
-
-                    sorted_logits, sorted_indices = torch.sort(
-                        logits,
-                        descending=True
-                    )
-
-                    probabilities = F.softmax(
-                        sorted_logits,
-                        dim=-1
-                    )
-
-                    cumulative = probabilities.cumsum(
-                        dim=-1
-                    )
-
-                    remove = cumulative > top_p
-
-                    remove[:, 1:] = (
-                        remove[:, :-1].clone()
-                    )
-
-                    remove[:, 0] = False
-
-                    sorted_logits = sorted_logits.masked_fill(
-                        remove,
-                        float("-inf")
-                    )
-
-                    logits = torch.full_like(
-                        logits,
-                        float("-inf")
-                    )
-
-                    logits.scatter_(
-                        -1,
-                        sorted_indices,
-                        sorted_logits
-                    )
-
-                probabilities = F.softmax(
-                    logits,
-                    dim=-1
-                )
-
-                next_token = torch.multinomial(
-                    probabilities,
-                    num_samples=1
-                )
-
             generated = torch.cat(
-                [generated, next_token],
+                [
+                    generated,
+                    next_token
+                ],
                 dim=1
             )
 
@@ -784,11 +952,23 @@ class NovaLM(nn.Module):
             ):
                 break
 
+            if generated.shape[1] >= self.config.max_seq_len:
+                break
+
+            output = self(
+                next_token,
+                use_cache=True,
+                caches=caches
+            )
+
+            logits = output["logits"][:, -1, :]
+
         return generated
 
 
-def count_parameters(model):
-
+def count_parameters(
+    model
+):
     return sum(
         p.numel()
         for p in model.parameters()
@@ -796,18 +976,63 @@ def count_parameters(model):
     )
 
 
+def create_kv_caches(
+    model
+):
+    return [
+        KVCache()
+        for _ in model.layers
+    ]
+
+
+def clear_kv_caches(
+    caches
+):
+    if caches is None:
+        return
+
+    for cache in caches:
+        if cache is not None:
+            cache.clear()
+
+
 if __name__ == "__main__":
 
     from tokenizer import ByteTokenizer
 
+    print(
+        "=" * 72
+    )
+
+    print(
+        "NovaLM model test"
+    )
+
+    print(
+        "=" * 72
+    )
+
     tokenizer = ByteTokenizer()
 
-    # 設定をtokenizerに合わせる
     MODEL.vocab_size = tokenizer.vocab_size
 
-    model = NovaLM(MODEL)
+    print(
+        f"Tokenizer vocab size: "
+        f"{tokenizer.vocab_size}"
+    )
 
-    params = count_parameters(model)
+    print(
+        f"Model vocab size: "
+        f"{MODEL.vocab_size}"
+    )
+
+    model = NovaLM(
+        MODEL
+    )
+
+    params = count_parameters(
+        model
+    )
 
     print(
         f"Parameters: {params:,}"
@@ -819,7 +1044,13 @@ if __name__ == "__main__":
         else "cpu"
     )
 
-    model = model.to(device)
+    print(
+        f"Device: {device}"
+    )
+
+    model = model.to(
+        device
+    )
 
     text = "こんにちは"
 
@@ -835,23 +1066,125 @@ if __name__ == "__main__":
         device=device
     )
 
+    print(
+        f"Input text: {text}"
+    )
+
+    print(
+        f"Input tokens: {len(tokens)}"
+    )
+
+    print(
+        f"Input shape: {input_ids.shape}"
+    )
+
     output = model(
         input_ids
     )
 
     print(
-        "Input shape:",
-        input_ids.shape
+        f"Logits shape: "
+        f"{output['logits'].shape}"
     )
 
     print(
-        "Logits shape:",
-        output["logits"].shape
+        "-" * 72
+    )
+
+    print(
+        "Testing KV cache..."
+    )
+
+    caches = create_kv_caches(
+        model
+    )
+
+    cache_output = model(
+        input_ids,
+        use_cache=True,
+        caches=caches
+    )
+
+    cache_length = caches[0].seq_len
+
+    print(
+        f"Prompt length: "
+        f"{input_ids.shape[1]}"
+    )
+
+    print(
+        f"Cache length: "
+        f"{cache_length}"
+    )
+
+    if cache_length != input_ids.shape[1]:
+        raise RuntimeError(
+            "KV cache length does not match "
+            "prompt length"
+        )
+
+    test_token = torch.tensor(
+        [
+            [
+                tokenizer.eos_token_id
+            ]
+        ],
+        dtype=torch.long,
+        device=device
+    )
+
+    next_output = model(
+        test_token,
+        use_cache=True,
+        caches=caches
+    )
+
+    new_cache_length = (
+        caches[0].seq_len
+    )
+
+    print(
+        f"Cache length after one token: "
+        f"{new_cache_length}"
+    )
+
+    expected_cache_length = (
+        input_ids.shape[1] + 1
+    )
+
+    if new_cache_length != expected_cache_length:
+        raise RuntimeError(
+            "KV cache was not updated correctly"
+        )
+
+    clear_kv_caches(
+        caches
+    )
+
+    print(
+        "-" * 72
+    )
+
+    print(
+        "Testing generation..."
     )
 
     generated = model.generate(
         input_ids,
-        max_new_tokens=32
+        max_new_tokens=32,
+        temperature=0.8,
+        top_k=50,
+        top_p=0.95,
+        eos_token_id=tokenizer.eos_token_id
+    )
+
+    print(
+        "Generated token count:",
+        generated.shape[1]
+    )
+
+    decoded = tokenizer.decode(
+        generated[0].tolist()
     )
 
     print(
@@ -859,7 +1192,17 @@ if __name__ == "__main__":
     )
 
     print(
-        tokenizer.decode(
-            generated[0].tolist()
-        )
+        decoded
+    )
+
+    print(
+        "=" * 72
+    )
+
+    print(
+        "Model test completed."
+    )
+
+    print(
+        "=" * 72
     )
