@@ -2,7 +2,7 @@
 
 VS Codeで、
 
-C:\Users\hirok\Downloads\s-ai-main\s-ai-main
+C:\Users\sennin\Downloads\s-ai-main\s-ai-main
 
 を開きます。
 
